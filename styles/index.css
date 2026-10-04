@@ -1,0 +1,52 @@
+/*
+ * Slidev auto-loads this file. The overflow-auto rule is a safety net for
+ * the known Slidev overflow issue: if a slide's content is taller than the
+ * viewport, it becomes scrollable instead of silently clipped. Treat this
+ * as a last resort, not a plan — an overflowing slide should be split into
+ * two slides or use layout: two-cols instead (see
+ * internal/context.md's Slidev decision for the full reasoning).
+ */
+.slidev-layout {
+  overflow-y: auto;
+}
+
+/* Left-align everything by default — never justify body text (ADHD/readability, see docs/adhd-friendly-design.md #12) */
+.slidev-layout p,
+.slidev-layout li {
+  text-align: left;
+}
+
+/*
+ * @slidev/theme-seriph's `cover` layout defaults its background to
+ * https://source.unsplash.com/collection/... — Unsplash decommissioned
+ * that endpoint years ago, so it's a dead request on every load (this was
+ * the "image doesn't load" bug). Every deck must set an explicit local
+ * `background: /cover-bg.svg` (from public/) on its title slide's
+ * frontmatter to avoid the network request entirely. When background is
+ * an image (not a #hex/rgb/hsl color), the theme automatically applies a
+ * dark scrim + white text for contrast — this rule is just a safety net
+ * in case a slide sets a plain color background instead.
+ */
+.slidev-layout.cover,
+.slidev-layout.cover h1,
+.slidev-layout.cover h2,
+.slidev-layout.cover h3,
+.slidev-layout.cover p,
+.slidev-layout.cover div {
+  color: white;
+}
+
+/*
+ * @slidev/client's built-in `end` layout hardcodes a flat black
+ * background (bg-black) regardless of theme/colorSchema — this bookends
+ * the closing slide with the same cover image instead, so it's an
+ * intentional brand color rather than an unstyled black card. Requires
+ * cover-bg.svg to exist in each deck's own public/ folder.
+ */
+.slidev-layout.end {
+  background-color: transparent !important;
+  background-image: linear-gradient(rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.5)), url(/cover-bg.svg) !important;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+}

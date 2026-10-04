@@ -1,0 +1,17 @@
+{
+  "name": "css4003",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lecture:06": "slidev lectures/06-intro-cloud-aws/slides.md --open",
+    "build:06": "slidev build lectures/06-intro-cloud-aws/slides.md --out dist/06-intro-cloud-aws --base /css4003/06-intro-cloud-aws/",
+    "export:06": "slidev export lectures/06-intro-cloud-aws/slides.md --output pdfs/06-intro-cloud-aws.pdf"
+  },
+  "devDependencies": {
+    "@iconify-json/logos": "^1.2.14",
+    "@iconify-json/simple-icons": "^1.2.95",
+    "@slidev/cli": "^52.19.1",
+    "@slidev/theme-seriph": "^0.25.0",
+    "playwright-chromium": "^1.63.0"
+  }
+}
