@@ -4,7 +4,8 @@
 over HTTP and SSH, see what changes when you stop and start it, and then
 remove everything. These are the skills from today's lecture.
 
-**Timebox:** ~45–60 min, in class. If you're stuck on one step for more
+**Timebox:** ~45 min for Track A, in class. Track B also fits if you did
+the "Before class" step at home. If you're stuck on one step for more
 than 10 minutes, ask instead of pushing through alone.
 
 > **How you're checked:** this practice is done in class and **checked
@@ -13,10 +14,25 @@ than 10 minutes, ask instead of pushing through alone.
 > done and **explain** what each step does. The instructor will ask you a
 > few of the questions under "Be ready to explain".
 
-> **AWS access isn't guaranteed for everyone, so there are two tracks.**
-> Do **Track A** if you have an AWS account (the one you secured last week).
-> Otherwise do **Track B**, which runs a VM on your own laptop. Tell the
-> instructor which track you did.
+> **Two tracks.** Do **Track A** in **AWS Academy Learner Lab** (you were
+> invited by email). If you can't get into Learner Lab yet, do **Track B**,
+> which runs a VM on your own laptop. Tell the instructor which track you
+> did.
+
+> **Using AWS Academy Learner Lab (Track A)**
+> 1. In AWS Academy: **Modules → Launch AWS Academy Learner Lab → Start
+>    Lab**. Wait until the dot next to "AWS" turns **green**, then click
+>    **AWS** to open the console.
+> 2. Work in region **`us-east-1`** (N. Virginia). Per the Learner Lab
+>    Readme, only `us-east-1` and `us-west-2` are allowed.
+> 3. For the CLI, open **AWS Details → AWS CLI → Show** and paste the
+>    credentials into `~/.aws/credentials`. They are **temporary** and
+>    include a session token, so copy them again each session. Or use the
+>    terminal on the Learner Lab page, which is already set up.
+> 4. Use the ready-made key pair **`vockey`**: **AWS Details → Download
+>    PEM** gives you `labsuser.pem`. Don't create IAM users or key pairs.
+>    Learner Lab doesn't need them.
+> 5. When you're done: clean up (A7), then click **End Lab**.
 
 ## Definition of done (things you can show)
 
@@ -25,19 +41,18 @@ than 10 minutes, ask instead of pushing through alone.
       (Track A: also the instance ID and AZ)
 - [ ] A shell on the server, and the end of the cloud-init log
 - [ ] The address **before and after** a stop → start, and what changed
-- [ ] Cleanup: nothing of yours is still running (Track A: no instance,
-      security group or key pair left)
+- [ ] Cleanup: nothing of yours is still running (Track A: no instance or
+      security group left, and the lab is ended)
 
 ---
 
-## Track A — real AWS
+## Track A — AWS Academy Learner Lab
 
-Use region **`eu-central-1` (Frankfurt)** and last week's CLI profile.
+Start the lab first (see the box above). Region **`us-east-1`**.
 
 ```bash
-export AWS_PROFILE=css4003
-export AWS_REGION=eu-central-1
-aws sts get-caller-identity          # must be your IAM admin user, not root
+export AWS_REGION=us-east-1
+aws sts get-caller-identity          # Arn ends in assumed-role/voclabs/...
 ```
 
 ### A1. Security group: SSH from you, HTTP from anyone
@@ -54,17 +69,19 @@ aws ec2 describe-security-groups --group-ids $SG \
   --query 'SecurityGroups[0].IpPermissions[].[FromPort,IpRanges[0].CidrIp]' --output table
 ```
 
-### A2. Key pair
+### A2. Key: use `vockey`
+
+Download `labsuser.pem` from **AWS Details → Download PEM** into your
+working folder, then:
 
 ```bash
-aws ec2 create-key-pair --key-name css4003-key \
-  --query KeyMaterial --output text > css4003-key.pem
-chmod 400 css4003-key.pem
+chmod 400 labsuser.pem
+aws ec2 describe-key-pairs --query 'KeyPairs[].KeyName' --output text   # shows vockey
 ```
 
 Windows PowerShell: `ssh` refuses a key that other users can read. If you
 get "UNPROTECTED PRIVATE KEY FILE", run
-`icacls css4003-key.pem /inheritance:r /grant:r "$($env:USERNAME):R"`.
+`icacls labsuser.pem /inheritance:r /grant:r "$($env:USERNAME):R"`.
 
 ### A3. User data
 
@@ -94,7 +111,7 @@ then the request) who it is, and writes that into the page.
 IID=$(aws ec2 run-instances \
   --image-id resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
   --instance-type t3.micro \
-  --key-name css4003-key \
+  --key-name vockey \
   --security-group-ids $SG \
   --user-data file://user-data.sh \
   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=css4003-web}]' \
@@ -106,9 +123,8 @@ aws ec2 describe-instances --instance-ids $IID \
   --output text
 ```
 
-Check the free-tier-eligible instance types for **your** account on
-<https://aws.amazon.com/free> first. If `t3.micro` isn't one of them, use
-one that is.
+`t3.micro` works in Learner Lab. If the launch is refused, use
+`t2.micro` instead.
 
 ### A5. Use it
 
@@ -120,7 +136,7 @@ curl http://$IP                 # wait 1–2 min: "running" comes before cloud-i
 Open `http://<public-ip>` in a browser too. Then SSH in:
 
 ```bash
-ssh -i css4003-key.pem ec2-user@$IP
+ssh -i labsuser.pem ec2-user@$IP
 # on the instance:
 cloud-init status                             # want: status: done
 sudo tail -n 20 /var/log/cloud-init-output.log
@@ -151,8 +167,6 @@ without re-running user data. Why?
 aws ec2 terminate-instances --instance-ids $IID
 aws ec2 wait instance-terminated --instance-ids $IID
 aws ec2 delete-security-group --group-id $SG      # only works after the instance is gone
-aws ec2 delete-key-pair --key-name css4003-key
-rm -f css4003-key.pem
 
 # prove nothing is left
 aws ec2 describe-instances \
@@ -160,6 +174,9 @@ aws ec2 describe-instances \
   --query 'Reservations[].Instances[].InstanceId' --output text     # empty
 aws ec2 describe-addresses --query 'Addresses[].PublicIp' --output text   # empty
 ```
+
+Keep `vockey` (it belongs to the lab). Then click **End Lab** on the
+Learner Lab page.
 
 **Stretch (optional), before cleanup:** turn on termination protection
 with `aws ec2 modify-instance-attribute --instance-id $IID
@@ -183,6 +200,15 @@ uses **cloud-init**, the same tool that runs EC2 user data.
 | Instance metadata (IMDSv2) | No equivalent |
 | stop / start | `multipass stop` / `multipass start` |
 | terminate | `multipass delete` + `multipass purge` |
+
+> **Before class (at home), or Track B won't fit in the hour.** Install
+> Multipass (B1), then run this once so the Ubuntu image is downloaded and
+> cached on your laptop (it's several hundred MB):
+>
+> ```bash
+> multipass launch --name warmup
+> multipass delete --purge warmup
+> ```
 
 ### B1. Install
 
@@ -306,12 +332,17 @@ cloud-init would have done that this doesn't.
 - **`Permission denied (publickey)`.** Wrong user (`ec2-user` on Amazon
   Linux, `ubuntu` on Ubuntu), wrong key, or the `.pem` is readable by
   others (`chmod 400`).
+- **`InvalidClientTokenId` / `ExpiredToken` (Track A).** The Learner Lab
+  session ended or you copied old credentials. Start Lab again and copy
+  fresh credentials from **AWS Details**.
+- **Launch refused / `UnauthorizedOperation` (Track A).** You're in the
+  wrong region. Learner Lab only allows `us-east-1` and `us-west-2`.
 - **Edited `user-data.sh` and nothing changed.** User data only runs on the
   first boot. Terminate and launch a new instance.
 - **`delete-security-group` fails with `DependencyViolation`.** The
   instance isn't fully terminated yet. Wait for `instance-terminated`
   first.
-- **The `.pem` ends up in Git.** Never commit it. Add `*.pem` to
+- **`labsuser.pem` ends up in Git.** Never commit it. Add `*.pem` to
   `.gitignore`.
 - **Track B: `launch failed: ... timed out`.** The VM is slow to boot on
   first run while it downloads the image. Run `multipass list`. It often
