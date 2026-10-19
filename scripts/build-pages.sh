@@ -150,6 +150,11 @@ HTML_HEAD
     if [ -f "pdfs/practice-$slug.pdf" ]; then
       pdf_link="${pdf_link:+$pdf_link }<a href=\"pdfs/practice-${slug}.pdf\">Practice</a>"
     fi
+    for n in 2 3 4; do
+      if [ -f "pdfs/practice-$slug-$n.pdf" ]; then
+        pdf_link="${pdf_link:+$pdf_link }<a href=\"pdfs/practice-${slug}-${n}.pdf\">Practice $n</a>"
+      fi
+    done
     printf '  <li><span class="title">%s</span><span class="links"><a href="%s/">Slides</a>%s</span></li>\n' \
       "$title" "$slug" "${pdf_link:+ $pdf_link}"
   done
