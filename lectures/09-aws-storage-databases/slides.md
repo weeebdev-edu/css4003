@@ -1,6 +1,6 @@
 ---
 theme: seriph
-title: "CSS4003 — Lecture 9: AWS Storage & Databases"
+title: "CSS4003 — Lecture 9: Cloud Storage & Docker Fundamentals"
 info: |
   CSS4003 — DevOps 2 · Narxoz University
   Lecture 9 of 15
@@ -12,7 +12,7 @@ download: true
 
 # CSS4003 — DevOps 2
 
-## Lecture 9: AWS Storage & Databases
+## Lecture 9: Cloud Storage & Docker Fundamentals
 
 <div class="pt-8 opacity-70">
 Nauruzbayeva Farikha · Lesson 9
@@ -29,8 +29,7 @@ layout: default
 - What makes a subnet "public"? <span v-click class="opacity-60">(its route table sends `0.0.0.0/0` to an internet gateway — not its name, not its CIDR)</span>
 - How many addresses does a `/24` subnet have? <span v-click class="opacity-60">(256, of which AWS reserves 5 — so 251 usable)</span>
 - Why does SG-app allow SSH from SG-web instead of an IP? <span v-click class="opacity-60">(it follows the web servers wherever they move; an IP rule breaks when an instance is replaced)</span>
-- Security group vs NACL: which one is stateful? <span v-click class="opacity-60">(the security group — return traffic is allowed automatically; NACLs need rules both ways)</span>
-- A private instance needs to download updates. What do you add? <span v-click class="opacity-60">(a NAT gateway in a public subnet, and a route to it — and delete it after, it costs money)</span>
+- Security group vs NACL: which one is stateful? <span v-click class="opacity-60">(the security group — return traffic is allowed automatically)</span>
 
 </v-clicks>
 
@@ -41,14 +40,14 @@ layout: default
 
 <v-clicks>
 
-- [ ] Block, file and object storage: three different shapes of data
-- [ ] EBS: disks for EC2, volume types and snapshots
-- [ ] S3: buckets, keys, storage classes, versioning and lifecycle
-- [ ] Keeping S3 private: Block Public Access and presigned URLs
-- [ ] S3 from the CLI — the commands you'll use in CI/CD
-- [ ] Databases: on EC2 vs managed RDS, and DynamoDB
-- [ ] Automate it: backup scripts, boto3 and CI — storage as code
-- [ ] Choosing the right service, and not paying for forgotten ones
+- [ ] Part 1 — cloud storage in 15 minutes: EBS, S3, EFS, RDS, DynamoDB
+- [ ] Scripting S3: a backup script, boto3, and where credentials come from
+- [ ] Part 2 — why containers, and how they differ from VMs
+- [ ] Images, containers, registries and the everyday `docker` commands
+- [ ] Writing a Dockerfile, and making the layer cache work for you
+- [ ] Volumes, networks and Docker Compose
+- [ ] Storage meets containers: a container that backs up to S3
+- [ ] Live demo → straight into today's practice
 
 </v-clicks>
 
@@ -61,17 +60,16 @@ class: text-center
 
 <div class="text-lg text-left mt-4 max-w-2xl mx-auto">
 
-Your app from last week now has users. They upload profile pictures,
-which the app saves to `/var/www/uploads` on the EC2 disk. The database
-is PostgreSQL, installed by hand on the same instance. One night the
-instance is terminated by mistake — and the pictures, the database
-and the last two weeks of data go with it.
+Your teammate's Flask app "works on my machine". On the server it
+crashes: a different Python version, a missing library. When it finally
+runs, the notes users save live on the server's disk — until someone
+redeploys and they're gone.
 
 </div>
 
 <div v-click class="mt-8 text-xl font-bold">
-Today: put each kind of data where it survives — and where AWS does the
-boring, risky parts for you.
+Today: package the app so it runs the same everywhere — and keep its
+data somewhere that survives.
 </div>
 
 ---
@@ -79,8 +77,8 @@ layout: section
 transition: slide-left
 ---
 
-# Block 1
-## Three shapes of storage
+# Part 1
+## Cloud storage in 15 minutes
 
 ---
 ---
@@ -96,229 +94,61 @@ transition: slide-left
 | Good for | OS disk, databases | Shared app files | Uploads, backups, logs, static sites |
 
 <div v-click class="mt-6 text-sm opacity-70">
-The scenario's mistake: user uploads (objects) and a database (block)
-both lived on the instance's own disk, with nothing outside it.
+The scenario's mistake: user data lived only on the server's own disk,
+with no copy anywhere else.
 </div>
 
 ---
-layout: section
-transition: slide-left
 ---
 
-# Block 2
-## EBS — disks for EC2
+# EBS vs S3 vs EFS
 
----
----
-
-# EBS in four facts
+| | EBS | S3 | EFS |
+|---|---|---|---|
+| Scope | One AZ, one instance at a time | Region, reached over HTTPS | Region, many instances |
+| Survives instance stop | Yes | — | — |
+| Backups | Snapshots (incremental) | Versioning, replication | AWS Backup |
+| Typical DevOps use | Root disk, DB data files | Artifacts, backups, static sites | Shared uploads folder |
 
 <v-clicks>
 
-- **EBS** = Elastic Block Store: network-attached disks for EC2. The root
-  disk of your instance last week was an EBS volume.
-- A volume lives in **one Availability Zone**, and attaches only to
-  instances **in that same AZ**.
-- It survives **stop/start**. On **terminate**, the root volume is deleted
-  by default (`DeleteOnTermination`); extra volumes are kept unless set
-  otherwise.
-- You pay for the **size you provision**, attached or not — an unattached
-  ("available") volume still costs money.
+- EBS volume types differ in speed and price: **gp3** is the general default.
+- **Instance store** is a fast local disk that is **lost on stop** — scratch data only.
 
 </v-clicks>
 
 ---
 ---
 
-# EBS volume types (qualitatively)
-
-| Type | Kind | Typical use |
-|---|---|---|
-| **gp3** | General purpose SSD | The default: boot disks, most apps |
-| **io2** | Provisioned-IOPS SSD | Busy databases that need steady, high IOPS |
-| **st1** | Throughput HDD | Big sequential reads: logs, data processing |
-| **sc1** | Cold HDD | Large data you rarely touch, lowest cost |
-
-<div v-click class="mt-6 text-sm opacity-70">
-HDD types (<code>st1</code>, <code>sc1</code>) can't be boot volumes.
-When in doubt: <b>gp3</b>. Exact limits change — check the EBS docs
-before sizing a real system.
-</div>
-
----
----
-
-# Snapshots: backups of a volume
+# S3 essentials: versioning and lifecycle
 
 <v-clicks>
 
-- A **snapshot** is a point-in-time copy of an EBS volume, stored by AWS
-  (in S3, behind the scenes — you don't see a bucket).
-- Snapshots are **incremental**: after the first, only changed blocks are
-  stored. Frequent snapshots are cheap.
-- Restore = **create a new volume** from the snapshot — in **any AZ** of
-  the region. This is how you move a disk to another AZ.
-- Snapshots can be copied to another **region** for disaster recovery.
-
-</v-clicks>
-
-```bash
-aws ec2 create-snapshot --volume-id vol-0abc... --description "before upgrade"
-aws ec2 create-volume --snapshot-id snap-0def... --availability-zone us-east-1b
-```
-
----
----
-
-# Instance store, and EFS
-
-<div class="grid grid-cols-2 gap-6 text-sm">
-<div>
-
-### Instance store
-
-- A disk **physically attached** to the host machine, on some instance
-  types.
-- Very fast, included in the price.
-- **Gone** when the instance stops or terminates.
-- Use it only for scratch data: caches, temp files.
-
-</div>
-<div>
-
-### EFS
-
-- **Elastic File System**: a managed NFS share.
-- Mounted by **many instances at once**, across AZs.
-- Grows and shrinks automatically — you pay for what you store.
-- Use it when several servers need the **same files**.
-
-</div>
-</div>
-
----
-layout: center
-class: text-center
----
-
-# Quick check
-
-<div class="text-xl mt-4 max-w-2xl mx-auto text-left">
-Your EBS volume is in <code>us-east-1a</code>. You need the same data on an
-instance in <code>us-east-1b</code>. What do you do?
-</div>
-
-<div v-click class="mt-8 text-lg opacity-70">
-Take a snapshot, then create a new volume from it in
-<code>us-east-1b</code> and attach it there. A volume can't attach across
-AZs.
-</div>
-
----
-layout: section
-transition: slide-left
----
-
-# Block 3
-## S3 — object storage
-
----
----
-
-# Buckets and keys
-
-<v-clicks>
-
-- A **bucket** is a container for objects. Its name is **globally unique**
-  across all AWS accounts — `lab09-<your-student-id>`, not `test`.
-- A bucket lives in **one region**, even though the name is global.
-- An **object** = a **key** (its full name) + data + metadata, e.g.
-  `uploads/users/42/avatar.png`.
-- There are no real folders: `uploads/users/42/` is just a key **prefix**
-  that the console draws as folders.
-- Objects can be from 0 bytes up to very large files; you reach them over
-  HTTPS with the API, CLI or SDK.
-
-</v-clicks>
-
----
----
-
-# Storage classes
-
-| Class | For data that is… |
-|---|---|
-| **S3 Standard** | Read often — the default |
-| **S3 Intelligent-Tiering** | Accessed unpredictably — AWS moves it for you |
-| **S3 Standard-IA** | Read rarely, but needed fast when read |
-| **S3 Glacier Instant / Flexible Retrieval** | Archives; retrieval from instant to hours |
-| **S3 Glacier Deep Archive** | Kept for years, almost never read |
-
-<div v-click class="mt-6 text-sm opacity-70">
-Colder classes cost less to store but more to read, and some have a
-minimum storage time. Don't put files you read every day in Glacier.
-</div>
-
----
----
-
-# Versioning: undo for a bucket
-
-<v-clicks>
-
-- With **versioning on**, every overwrite keeps the old copy as a
-  **previous version**.
-- Deleting an object adds a **delete marker** instead of erasing it.
-  Remove the marker → the object is back.
-- Protects against the most common data loss: **a script or a person
-  overwriting or deleting the wrong file**.
-- Cost: every version is billed. Pair versioning with a lifecycle rule
-  that expires old versions.
+- **Versioning on** → an overwrite keeps the old copy; `rm` adds a
+  **delete marker** instead of erasing. Remove the marker → the file is back.
+- Every version is billed, so pair it with a **lifecycle rule** that
+  expires old versions and moves old data to cheaper classes.
 
 </v-clicks>
 
 ```bash
 aws s3api put-bucket-versioning --bucket lab09-123 \
   --versioning-configuration Status=Enabled
-aws s3api list-object-versions --bucket lab09-123 --prefix notes.txt
+aws s3api put-bucket-lifecycle-configuration --bucket lab09-123 \
+  --lifecycle-configuration file://lifecycle.json   # rules live in Git
 ```
 
 ---
 ---
 
-# Lifecycle rules: automatic housekeeping
+# S3 essentials: keep it private, share briefly
 
 <v-clicks>
 
-- A **lifecycle rule** moves or deletes objects by age, for a whole bucket
-  or a key prefix.
-- **Transition**: e.g. `logs/` → Standard-IA after 30 days, → Glacier
-  after 90.
-- **Expiration**: delete `tmp/` after 7 days; delete **noncurrent
-  versions** 30 days after they're replaced.
-- Set it once; S3 applies it in the background, forever.
-
-</v-clicks>
-
-```json
-{ "Rules": [{ "ID": "tidy-old-versions", "Filter": { "Prefix": "" },
-  "Status": "Enabled",
-  "NoncurrentVersionExpiration": { "NoncurrentDays": 30 } }] }
-```
-
----
----
-
-# Keep it private: Block Public Access
-
-<v-clicks>
-
-- New buckets are **private**. Only identities you allow (IAM) can read
-  them.
-- **Block Public Access** has four switches; with all four on, no ACL or
-  bucket policy can make the bucket public, even by mistake.
-- Leaked public buckets are one of the most common cloud data breaches.
-  Keep all four on unless you are deliberately hosting a public site.
+- New buckets are **private**. **Block Public Access** (all four switches on)
+  stops any policy or ACL from making them public by mistake.
+- To share **one** file, hand out a **presigned URL**: a link with a
+  signature and an expiry, using **your** permissions.
 
 </v-clicks>
 
@@ -326,252 +156,87 @@ aws s3api list-object-versions --bucket lab09-123 --prefix notes.txt
 aws s3api put-public-access-block --bucket lab09-123 \
   --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+aws s3 presign s3://lab09-123/report.pdf --expires-in 300   # valid 5 minutes
 ```
 
 ---
 ---
 
-# Presigned URLs: share one file, briefly
+# S3 from the CLI — what scripts and CI/CD use
 
-<v-clicks>
-
-- A **presigned URL** is a normal HTTPS link with a signature and an
-  expiry time in the query string.
-- Anyone holding it can `GET` (or `PUT`) **that one object** until it
-  expires — using **your** permissions, not theirs.
-- The bucket stays private. Typical use: "download your invoice" links,
-  direct browser uploads.
-
-</v-clicks>
-
-```bash
-aws s3 presign s3://lab09-123/report.pdf --expires-in 300   # 5 minutes
-curl -o report.pdf "<the URL it printed>"
-```
-
----
----
-
-# Static website hosting
-
-<v-clicks>
-
-- S3 can serve a **static site** (HTML, CSS, JS, images) straight from a
-  bucket: no web server to patch.
-- It needs public read access for the site files — so it's a **separate
-  bucket**, never the one with private data.
-- In production you usually put **CloudFront** (a CDN) in front, for HTTPS
-  on your domain and caching.
-- Your Slidev decks for this course could be hosted exactly this way.
-
-</v-clicks>
-
----
----
-
-# S3 from the CLI — what CI/CD uses
-
-```bash {1|2|3|4|5-6}
+```bash {1|2|3|4|5}
 aws s3 ls s3://lab09-123/                            # list a prefix
 aws s3 cp build.zip s3://lab09-123/releases/v1.zip   # upload one file
-aws s3 sync ./dist s3://lab09-123/site/ --delete     # mirror a folder
-aws s3 cp s3://lab09-123/releases/v1.zip .           # download
-aws s3api get-bucket-versioning --bucket lab09-123   # low-level API:
-aws s3api list-object-versions --bucket lab09-123    #   every setting
+aws s3 cp ./data s3://lab09-123/backup/ --recursive  # upload a folder
+aws s3 sync ./dist s3://lab09-123/site/ --delete     # mirror (careful!)
+aws s3api get-bucket-versioning --bucket lab09-123   # low-level API
 ```
 
 <v-clicks>
 
-- **`aws s3`** — high-level, file-like commands: `ls`, `cp`, `sync`, `rm`.
-- **`aws s3api`** — one command per API call: versioning, lifecycle,
-  policies, public-access settings.
-- In week 12 your GitHub Actions pipeline will run exactly these
-  commands to publish build artifacts.
-
-</v-clicks>
-
----
-layout: center
-class: text-center
----
-
-# Quick check
-
-<div class="text-xl mt-4 max-w-2xl mx-auto text-left">
-Versioning is on. You run <code>aws s3 rm s3://bucket/notes.txt</code>.
-Is the file gone?
-</div>
-
-<div v-click class="mt-8 text-lg opacity-70">
-No. S3 adds a <b>delete marker</b> as the newest version. All older
-versions are still there — delete the marker and the file is back.
-</div>
-
----
-layout: section
-transition: slide-left
----
-
-# Block 4
-## Databases on AWS
-
----
----
-
-# Option 1: install it yourself on EC2
-
-<v-clicks>
-
-- Full control: any engine, any version, any setting.
-- But **you** do everything: OS patching, DB upgrades, backups, testing
-  restores, replication, failover, disk monitoring.
-- One instance = one AZ = a single point of failure.
-- This is exactly the setup that lost data in today's scenario.
+- **`aws s3`** — file-like commands: `ls`, `cp`, `sync`, `rm`.
+- **`aws s3api`** — one command per API call: versioning, lifecycle, policies.
+- `sync --delete` removes what isn't in your folder: run `--dryrun` first.
 
 </v-clicks>
 
 ---
 ---
 
-# Option 2: Amazon RDS (managed)
+# Databases: Amazon RDS
 
 | | DB on EC2 | Amazon RDS |
 |---|---|---|
-| OS and DB patching | You | AWS (in your maintenance window) |
-| Automated backups | You script them | Built in, with point-in-time restore |
+| OS and DB patching | You | AWS |
+| Backups | You script them | Built in, with point-in-time restore |
 | Standby in another AZ | You build replication | One setting: **Multi-AZ** |
 | Your job | Everything | Schema, data, who can connect, cost |
 
-<div v-click class="mt-6 text-sm opacity-70">
-Engines: PostgreSQL, MySQL, MariaDB, Oracle, SQL Server — plus
-<b>Aurora</b>, AWS's own MySQL/PostgreSQL-compatible engine.
-</div>
+<v-clicks>
+
+- Runs in **private subnets** of your VPC; you connect to an **endpoint** (DNS name).
+- **Multi-AZ** = availability (same endpoint). **Read replica** = more reads (own endpoint).
+
+</v-clicks>
 
 ---
 ---
 
-# RDS in your VPC
+# Databases: DynamoDB
 
 <v-clicks>
 
-- An RDS instance runs **inside your VPC**, in a **DB subnet group** —
-  a list of subnets in **at least two AZs**.
-- Put it in **private subnets** with **public access: No**.
-- Its security group allows the DB port (`5432`, `3306`) **only from the
-  app servers' security group** — last week's SG-to-SG pattern.
-- You connect to an **endpoint** (a DNS name), never an IP: it keeps
-  pointing at the right server after failover or restore.
+- Fully managed **key-value / document** database: no servers, no patching.
+- Every item has a **partition key** (e.g. `id`); other attributes are free-form.
+- **On-demand** capacity: pay per request — good for spiky traffic.
 
 </v-clicks>
 
 ```bash
-psql "host=lab-db.xxxx.us-east-1.rds.amazonaws.com port=5432 dbname=shop user=dbadmin"
-```
-
----
----
-
-# Backups, Multi-AZ and read replicas
-
-<v-clicks>
-
-- **Automated backups**: daily snapshot + transaction logs → restore to
-  any second within the retention period (**point-in-time restore**).
-- A restore always creates a **new** DB instance with a **new endpoint**.
-- **Multi-AZ**: a synchronous standby in another AZ, automatic failover,
-  **same endpoint**. It's for availability — you can't read from it.
-- **Read replica**: an asynchronous copy with its **own endpoint**, to
-  spread **read** traffic. Can be promoted to a standalone DB.
-
-</v-clicks>
-
----
----
-
-# Option 3: DynamoDB (NoSQL)
-
-<v-clicks>
-
-- A fully managed **key-value / document** database. No servers, no
-  instance size, no patching.
-- Every table has a **partition key** (e.g. `id`); items are looked up by
-  key. Other attributes are **free-form** — items can differ.
-- **On-demand capacity**: pay per request, no capacity planning. Good for
-  spiky or unknown traffic.
-- Choose it for simple, high-volume access by key: sessions, carts,
-  device data, leaderboards. Choose **RDS** when you need joins,
-  complex queries and transactions across tables.
-
-</v-clicks>
-
----
----
-
-# DynamoDB from the CLI
-
-```bash {1-3|4-5|6|7}
-aws dynamodb create-table --table-name students \
-  --attribute-definitions AttributeName=id,AttributeType=S \
-  --key-schema AttributeName=id,KeyType=HASH --billing-mode PAY_PER_REQUEST
 aws dynamodb put-item --table-name students \
-  --item '{"id":{"S":"s001"},"name":{"S":"Aigerim"},"group":{"S":"ENG-1"}}'
+  --item '{"id":{"S":"s001"},"name":{"S":"Aigerim"}}'
 aws dynamodb get-item --table-name students --key '{"id":{"S":"s001"}}'
-aws dynamodb scan --table-name students        # reads the whole table
 ```
 
-<div v-click class="mt-4 text-sm opacity-70">
-<code>S</code> = string, <code>N</code> = number. <code>get-item</code> by
-key is cheap; <code>scan</code> reads every item — fine for a lab, avoid it
-on big tables.
-</div>
-
----
-layout: center
-class: text-center
----
-
-# Quick check
-
-<div class="text-xl mt-4 max-w-2xl mx-auto text-left">
-Your RDS database must keep running if one AZ fails. Multi-AZ or a read
-replica?
-</div>
-
-<div v-click class="mt-8 text-lg opacity-70">
-<b>Multi-AZ</b>: a synchronous standby with automatic failover and the same
-endpoint. A read replica is for scaling reads.
-</div>
-
----
-layout: section
-transition: slide-left
----
-
-# Block 5
-## Automate it — storage as code
-
 ---
 ---
 
-# Why script it?
+# Which one for which data?
 
-<v-clicks>
-
-- Clicking in the console works once. A **script** works every night, on
-  every server, and the next person can read what it does.
-- Scripts live in **Git**: reviewed in a pull request, versioned, rolled back.
-- The same commands run on your laptop, in **cron** and in **CI/CD**.
-- Today's tools: **Bash + AWS CLI** for glue, **Python + boto3** when you
-  need logic, **GitHub Actions** to run it on every push.
-
-</v-clicks>
+| Data | Service | Why |
+|---|---|---|
+| OS disk of an instance | EBS (gp3) | Block disk, survives stop/start |
+| Uploads, backups, logs, artifacts | S3 (+ lifecycle) | Durable, cheap, reachable from anywhere |
+| Files shared by several servers | EFS | One file system, many instances |
+| Relational app data | RDS (Multi-AZ in production) | SQL, joins, managed backups |
+| Simple key lookups at scale | DynamoDB | Serverless, pay per request |
 
 ---
 ---
 
 # `backup.sh` (1/2): fail fast, name things
 
-```bash {1-4|6-7|8-11}
+```bash {1-4|6-7|8-10}
 #!/usr/bin/env bash
 # Back up a folder to S3 under backups/<today>/
 # usage: ./backup.sh <folder> <bucket>
@@ -581,7 +246,6 @@ SRC=${1:?usage: backup.sh <folder> <bucket>}
 BUCKET=${2:?usage: backup.sh <folder> <bucket>}
 STAMP=$(date +%F-%H%M%S)                  # 2026-11-03-101500
 NAME="$(basename "$SRC")-$STAMP.tar.gz"
-ARCHIVE="/tmp/$NAME"
 KEY="backups/$(date +%F)/$NAME"           # one "folder" per day
 ```
 
@@ -596,97 +260,23 @@ variable, <code>-o pipefail</code> when any part of a pipe fails.
 
 # `backup.sh` (2/2): pack, upload, show
 
-```bash {1|2|3-4|5}
-tar -czf "$ARCHIVE" -C "$(dirname "$SRC")" "$(basename "$SRC")"
-aws s3 cp "$ARCHIVE" "s3://$BUCKET/$KEY"
-rm -f "$ARCHIVE"
+```bash {1|2|3-4}
+tar -czf "/tmp/$NAME" -C "$(dirname "$SRC")" "$(basename "$SRC")"
+aws s3 cp "/tmp/$NAME" "s3://$BUCKET/$KEY"
 echo "Backed up $SRC to s3://$BUCKET/$KEY"
 aws s3 ls "s3://$BUCKET/backups/" --recursive
 ```
 
 ```text
-$ ./backup.sh myapp lab09-<id>
-upload: /tmp/myapp-2026-11-03-101500.tar.gz to s3://lab09-<id>/backups/2026-11-03/...
-Backed up myapp to s3://lab09-<id>/backups/2026-11-03/myapp-2026-11-03-101500.tar.gz
-2026-11-03 10:15:00        569 backups/2026-11-03/myapp-2026-11-03-101500.tar.gz
+$ ./backup.sh myapp lab09-123
+upload: /tmp/myapp-2026-11-03-101500.tar.gz to s3://lab09-123/backups/2026-11-03/...
+Backed up myapp to s3://lab09-123/backups/2026-11-03/myapp-2026-11-03-101500.tar.gz
 ```
 
 <div v-click class="mt-4 text-sm opacity-70">
-Thanks to <code>set -e</code>, if the upload fails the script stops there —
-it never prints "Backed up" for a backup that doesn't exist.
-</div>
-
----
----
-
-# Restore the newest backup
-
-```bash {1-2|3-6|8-10}
-LATEST=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix backups/ \
-  --query 'sort_by(Contents || `[]`, &LastModified)[-1].Key' --output text)
-if [ "$LATEST" = "None" ]; then
-  echo "No backups found in s3://$BUCKET/backups/" >&2
-  exit 1
-fi
-
-aws s3 cp "s3://$BUCKET/$LATEST" /tmp/latest.tar.gz
-mkdir -p restored
-tar -xzf /tmp/latest.tar.gz -C restored
-```
-
-<div v-click class="mt-4 text-sm opacity-70">
-<code>--query</code> uses JMESPath: sort the objects by date and take the last
-one. <code>|| `[]`</code> handles an empty prefix instead of crashing.
-</div>
-
----
----
-
-# Lifecycle as code: backups clean themselves up
-
-```json
-{
-  "Rules": [{
-    "ID": "expire-old-backups",
-    "Filter": { "Prefix": "backups/" },
-    "Status": "Enabled",
-    "Expiration": { "Days": 30 },
-    "NoncurrentVersionExpiration": { "NoncurrentDays": 7 }
-  }]
-}
-```
-
-```bash
-aws s3api put-bucket-lifecycle-configuration --bucket "$BUCKET" \
-  --lifecycle-configuration file://backup-lifecycle.json
-```
-
-<div v-click class="mt-2 text-sm opacity-70">
-The rule is a file in Git, not a click in the console: backups older than
-30 days expire, and replaced versions are removed after 7.
-</div>
-
----
----
-
-# Deploy a static site with `aws s3 sync`
-
-```bash {1|2|3}
-aws s3 sync site/ "s3://$BUCKET/site/"                     # upload new/changed files only
-aws s3 sync site/ "s3://$BUCKET/site/" --delete --dryrun   # preview first!
-aws s3 sync site/ "s3://$BUCKET/site/" --delete            # make S3 match the folder
-```
-
-<v-clicks>
-
-- `sync` compares both sides and copies only what changed — fast for CI.
-- `--delete` removes files in S3 that are **not** in your folder.
-
-</v-clicks>
-
-<div v-click class="mt-4 p-4 rounded bg-red-500/10 text-sm">
-Swap the arguments by mistake (<code>sync s3://… site/ --delete</code>) and
-it deletes your local files instead. Always run <code>--dryrun</code> first.
+Thanks to <code>set -e</code>, a failed upload stops the script — it never
+prints "Backed up" for a backup that doesn't exist. Later today the same
+idea runs inside a container.
 </div>
 
 ---
@@ -698,37 +288,16 @@ it deletes your local files instead. Always run <code>--dryrun</code> first.
 import boto3
 s3 = boto3.client("s3")
 
-s3.upload_file("notes.txt", "lab09-test", "docs/notes.txt")
-s3.download_file("lab09-test", "docs/notes.txt", "copy.txt")
+s3.upload_file("notes.txt", "lab09-123", "docs/notes.txt")
+s3.download_file("lab09-123", "docs/notes.txt", "copy.txt")
 url = s3.generate_presigned_url("get_object",
-        Params={"Bucket": "lab09-test", "Key": "docs/notes.txt"},
+        Params={"Bucket": "lab09-123", "Key": "docs/notes.txt"},
         ExpiresIn=300)                 # seconds
 ```
 
 <div v-click class="mt-4 text-sm opacity-70">
-The same three things you did with the CLI — upload, download, presigned URL —
-but now inside a program that can loop, check results and decide.
-</div>
-
----
----
-
-# Python + boto3: a tiny "students" CRUD
-
-```python {1-3|5|6|7}
-import boto3
-from boto3.dynamodb.conditions import Key
-table = boto3.resource("dynamodb").Table("students")
-
-table.put_item(Item={"id": "s010", "name": "Aruzhan", "group": "ENG-1"})
-print(table.get_item(Key={"id": "s010"})["Item"])
-print(table.query(KeyConditionExpression=Key("id").eq("s010"))["Items"])
-```
-
-<div v-click class="mt-4 text-sm opacity-70">
-The <b>resource</b> API takes plain Python values — no
-<code>{"S": "..."}</code> type wrappers like the CLI. <code>query</code> reads
-by key; <code>scan</code> reads the whole table.
+Upload, download, presigned URL — the CLI commands, but inside a program
+that can loop, check results and decide.
 </div>
 
 ---
@@ -738,105 +307,18 @@ by key; <code>scan</code> reads the whole table.
 
 <v-clicks>
 
-- boto3 and the AWS CLI look for credentials in a fixed order:
-  **environment variables** → **`~/.aws/credentials`** (profile) →
-  **instance profile / role** on EC2.
-- So the same script runs on your laptop (profile), in Learner Lab
-  (temporary keys) and on EC2 (role) — with **zero keys in the file**.
-- Region: `AWS_DEFAULT_REGION=us-east-1` (or the profile's region).
-- Local testing: `AWS_ENDPOINT_URL=http://localhost:5003` sends every call to
-  **moto** instead of AWS — recent boto3 and AWS CLI read it automatically.
+- The AWS CLI and boto3 look for credentials in a fixed order:
+  **environment variables** → **`~/.aws/credentials`** → **instance role** on EC2.
+- So the same script runs on your laptop, in Learner Lab and on EC2 — with
+  **zero keys in the file**. Region: `AWS_DEFAULT_REGION=us-east-1`.
+- `AWS_ENDPOINT_URL=http://localhost:5050` sends every call to **moto**, a
+  local S3, instead of AWS. Remember this one — containers use it today.
 
 </v-clicks>
 
 <div v-click class="mt-4 p-4 rounded bg-red-500/10 text-sm">
-<code>aws_access_key_id="AKIA…"</code> in a script that reaches GitHub is a
+<code>aws_access_key_id="AKIA…"</code> in a file that reaches GitHub is a
 leaked key within minutes. Bots scan public repos for them.
-</div>
-
----
----
-
-# Database backups: a one-liner and a cron job
-
-```bash
-pg_dump -h "$DB_HOST" -U app shop | gzip \
-  | aws s3 cp - "s3://$BUCKET/db/shop-$(date +%F).sql.gz"
-```
-
-```text
-# crontab -e   →   every night at 02:30
-30 2 * * * /home/ec2-user/backup.sh /var/www/uploads lab09-<id> >> /var/log/backup.log 2>&1
-```
-
-<v-clicks>
-
-- `aws s3 cp -` reads from **stdin**: the dump streams straight to S3, no big
-  file on disk.
-- The DB password goes in `~/.pgpass` (mode 600), not in the script.
-- `>> backup.log 2>&1` keeps a record when nobody is watching.
-
-</v-clicks>
-
----
----
-
-# A backup you never restored is not a backup
-
-<v-clicks>
-
-- Backups fail **silently**: wrong folder, expired credentials, a full disk,
-  an empty dump.
-- Schedule a **restore test**: download the newest backup, unpack or load it
-  into a scratch database, check that the data is there.
-- Watch the **size and date** of the newest object — a 0-byte backup or one
-  from last month is an alarm.
-- RDS automated backups and snapshots are restored the same way: **into a new
-  instance**, which you then check.
-
-</v-clicks>
-
----
----
-
-# CI/CD: deploy `site/` on every push (concept)
-
-```yaml {1-4|5-7|8-14|15-16}
-name: deploy-site
-on:
-  push:
-    branches: [main]
-permissions:
-  id-token: write        # allow GitHub to issue an OIDC token
-  contents: read
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with: { role-to-assume: "arn:aws:iam::<account>:role/site-deploy", aws-region: us-east-1 }
-      - run: aws s3 sync site/ "s3://${{ vars.SITE_BUCKET }}/" --delete
-```
-
----
----
-
-# Why OIDC instead of access keys?
-
-<v-clicks>
-
-- With **OIDC**, GitHub proves "this is repo X, branch main" to AWS, and AWS
-  hands the job **temporary credentials** for one role.
-- No long-lived `AKIA…` key stored in GitHub secrets — nothing to leak or
-  rotate.
-- The IAM role's trust policy decides **which repo and branch** may assume it.
-
-</v-clicks>
-
-<div v-click class="mt-6 p-4 rounded bg-blue-500/10 text-sm">
-Learner Lab can't create IAM roles or OIDC providers, so this one is a demo
-for a real account. We'll build pipelines in the CI/CD weeks.
 </div>
 
 ---
@@ -847,14 +329,13 @@ class: text-center
 # Quick check
 
 <div class="text-xl mt-4 max-w-2xl mx-auto text-left">
-Your nightly <code>backup.sh</code> uploads to the wrong bucket name. Without
-<code>set -euo pipefail</code>, what would the log say the next morning?
+Versioning is on. You run <code>aws s3 rm s3://bucket/notes.txt</code>.
+Is the file gone?
 </div>
 
 <div v-click class="mt-8 text-lg opacity-70">
-Probably "Backed up …" — the failed <code>aws s3 cp</code> is ignored and the
-script carries on. With <code>set -e</code> it stops at the failure and the
-log shows the error.
+No. S3 adds a <b>delete marker</b> as the newest version. The older versions
+are still there — delete the marker and the file is back.
 </div>
 
 ---
@@ -862,42 +343,607 @@ layout: section
 transition: slide-left
 ---
 
-# Block 6
-## Choosing, and cleaning up
+# Part 2
+## Docker fundamentals
 
 ---
 ---
 
-# Which service for which data?
-
-| Data | Service | Why |
-|---|---|---|
-| OS disk of an instance | EBS (gp3) | Block disk, survives stop/start |
-| User uploads, backups, logs | S3 (+ lifecycle) | Durable, cheap, reachable from anywhere |
-| Files shared by several servers | EFS | One file system, many instances |
-| Relational app data | RDS (Multi-AZ in production) | SQL, joins, managed backups |
-| Simple key lookups at scale | DynamoDB | Serverless, pay per request |
-| Scratch / cache | Instance store | Fast, but lost on stop |
-
----
----
-
-# Cost hygiene — what keeps billing
+# "It works on my machine"
 
 <v-clicks>
 
-- **Unattached EBS volumes** and **old snapshots** — billed every month.
-- **Versioned buckets**: old versions are billed. Add a lifecycle rule.
-- **RDS instances**: billed per hour while they exist. A stopped RDS
-  instance starts again by itself after 7 days.
-- **Deleting a versioned bucket**: you must first delete **every version
-  and delete marker**.
+- An app needs more than its code: a **language runtime**, **libraries**
+  with exact versions, OS packages, config.
+- Every laptop and server has a slightly different mix → "works here,
+  crashes there".
+- A **container** ships the app **together with** everything it needs, as
+  one package that runs the same on any machine with Docker.
+- For DevOps this means: **build once, run anywhere** — laptop, CI, EC2, Kubernetes.
 
 </v-clicks>
 
+---
+---
+
+# Containers vs virtual machines
+
+| | Virtual machine | Container |
+|---|---|---|
+| Contains | A whole OS + kernel + app | App + its libraries, shares the host kernel |
+| Size | Gigabytes | Often tens of megabytes |
+| Starts in | Minutes | Seconds or less |
+| Isolation | Strong (hypervisor) | Process-level (namespaces, cgroups) |
+| On AWS | EC2 instance | Runs **on** an EC2 instance (or ECS, EKS) |
+
+<div v-click class="mt-6 text-sm opacity-70">
+Containers don't replace VMs: in the cloud you usually run containers
+<b>on</b> VMs. The container makes the app portable; the VM provides the machine.
+</div>
+
+---
+---
+
+# Image vs container
+
+<v-clicks>
+
+- An **image** is a read-only template: a filesystem snapshot + metadata
+  (which command to start). Built once, stored, shared.
+- A **container** is a **running instance** of an image, with its own thin
+  writable layer on top.
+- One image → many containers. Delete a container and its writable layer
+  is gone; the image stays.
+- Analogy: image = class, container = object. Or: image = `.iso`, container
+  = the running machine.
+
+</v-clicks>
+
+---
+---
+
+# Registries and tags
+
+<v-clicks>
+
+- A **registry** stores images: **Docker Hub** (public default), GitHub
+  Container Registry, AWS **ECR**.
+- Image names: `[registry/]repository:tag` — `nginx:1.31-alpine`,
+  `python:3.12-slim`, `ghcr.io/org/app:2.0`.
+- No tag means `:latest` — which changes under your feet. **Pin a version**
+  in anything you deploy.
+- `alpine` / `slim` variants are smaller base images: less to download,
+  fewer packages to patch.
+
+</v-clicks>
+
+---
+---
+
+# Your first container
+
+```bash {1|2|3|4}
+docker run -d --name web -p 8080:80 nginx:1.31-alpine
+docker ps                           # running containers
+curl -s localhost:8080 | grep title # <title>Welcome to nginx!</title>
+docker ps -a                        # also the stopped ones
+```
+
+<v-clicks>
+
+- `run` = pull the image if missing, create a container, start it.
+- `-d` — detached, in the background. `--name` — so you don't copy IDs.
+- `-p 8080:80` — **host port 8080 → container port 80**. Without `-p`,
+  nothing outside the container can reach it.
+
+</v-clicks>
+
+---
+---
+
+# Inspect, get inside, stop
+
+```bash {1|2|3|4|5}
+docker logs web               # stdout/stderr of the main process
+docker logs -f web            # follow, like tail -f
+docker exec -it web sh        # a shell INSIDE the running container
+docker stop web               # graceful stop (SIGTERM, then SIGKILL)
+docker rm web                 # delete it (or: docker rm -f web)
+```
+
+<v-clicks>
+
+- Containers should log to **stdout**, not to files — `docker logs` (and
+  later CloudWatch) collects it.
+- `exec -it` is for debugging. Never "fix" a container by hand: rebuild the image.
+
+</v-clicks>
+
+---
+---
+
+# Working with images
+
+```bash {1|2|3|4}
+docker pull python:3.12-slim     # download from the registry
+docker images                    # what's stored locally, with sizes
+docker history python:3.12-slim  # the layers an image is made of
+docker rmi lab09-app:slow        # delete a local image
+```
+
+<div v-click class="mt-6 text-sm opacity-70">
+Images are cached locally after the first pull — the second
+<code>docker run</code> of the same tag starts instantly.
+</div>
+
+---
+layout: center
+class: text-center
+---
+
+# Quick check
+
+<div class="text-xl mt-4 max-w-2xl mx-auto text-left">
+You ran <code>docker run -d nginx:1.31-alpine</code> and <code>curl
+localhost:80</code> fails. The container is running. Why?
+</div>
+
+<div v-click class="mt-8 text-lg opacity-70">
+No <code>-p</code>: port 80 exists only inside the container's network.
+Publish it with <code>-p 8080:80</code> and curl <code>localhost:8080</code>.
+</div>
+
+---
+layout: section
+transition: slide-left
+---
+
+# Building images
+## The Dockerfile
+
+---
+---
+
+# Dockerfile instructions you need today
+
+| Instruction | What it does |
+|---|---|
+| `FROM python:3.12-slim` | Base image to start from |
+| `WORKDIR /app` | Working directory for the next steps (created if missing) |
+| `COPY src dest` | Copy files from the build folder into the image |
+| `RUN pip install …` | Run a command **at build time**, save the result as a layer |
+| `ENV KEY=value` | Environment variable for build and run |
+| `EXPOSE 8000` | Documents the port — does **not** publish it |
+| `CMD ["python", "app.py"]` | Default command when a container **starts** |
+
+---
+---
+
+# The app we'll package
+
+```python {1-5|7-10|12-17|19-20}
+import os, socket
+from flask import Flask
+
+app = Flask(__name__)
+DATA = os.environ.get("DATA_DIR", "/data")
+
+@app.get("/")
+def index():
+    os.makedirs(DATA, exist_ok=True)
+    return {"host": socket.gethostname(), "files": sorted(os.listdir(DATA))}
+
+@app.post("/notes/<name>")
+def add_note(name):
+    os.makedirs(DATA, exist_ok=True)
+    with open(os.path.join(DATA, f"{name}.txt"), "w") as f:
+        f.write(f"note {name}\n")
+    return {"saved": f"{name}.txt"}, 201
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
+```
+
+---
+---
+
+# The Dockerfile
+
+```dockerfile {1|2|3-4|5|6-7|8}
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
+ENV DATA_DIR=/data
+EXPOSE 8000
+CMD ["python", "app.py"]
+```
+
+<v-clicks>
+
+- `requirements.txt` contains one line: `flask==3.1.3` — pinned.
+- The app binds **`0.0.0.0`**: inside a container, `127.0.0.1` would only
+  accept connections from the container itself.
+
+</v-clicks>
+
+---
+---
+
+# Build and run
+
+```bash {1|2|3|4|5}
+docker build -t lab09-app:1.0 .
+docker run -d --name app -p 8000:8000 lab09-app:1.0
+curl -s localhost:8000/                      # {"files":[],"host":"32d95490db47"}
+curl -s -X POST localhost:8000/notes/first   # {"saved":"first.txt"}
+curl -s localhost:8000/                      # {"files":["first.txt"],"host":"32d95490db47"}
+```
+
+<v-clicks>
+
+- `-t name:tag` names the image; `.` is the **build context** sent to Docker.
+- `host` is the **container's** hostname — its short ID, not your laptop.
+
+</v-clicks>
+
+---
+---
+
+# Layers and the build cache
+
+<v-clicks>
+
+- Each `FROM`, `COPY` and `RUN` produces a **layer**. Layers are cached.
+- On a rebuild Docker reuses every layer **until the first step whose input
+  changed** — that step and everything after it run again.
+- `COPY` changes when the copied files change; `RUN` when the step above it changed.
+- So: put what changes **rarely** (dependencies) **first**, what changes
+  **often** (your code) **last**.
+
+</v-clicks>
+
+```text
+#8 [4/5] RUN pip install --no-cache-dir -r requirements.txt
+#8 CACHED
+#9 [5/5] COPY app.py .
+```
+
+---
+---
+
+# Order matters
+
+<div class="grid grid-cols-2 gap-6">
+<div>
+
+**Slow** — any code change reinstalls everything
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY . .
+RUN pip install -r requirements.txt
+CMD ["python", "app.py"]
+```
+
+</div>
+<div>
+
+**Fast** — dependencies stay cached
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY app.py .
+CMD ["python", "app.py"]
+```
+
+</div>
+</div>
+
+<div v-click class="mt-6 text-sm opacity-70">
+In CI this is the difference between a 10-second and a 3-minute build —
+on every push.
+</div>
+
+---
+---
+
+# `.dockerignore`
+
+```text
+.venv/
+__pycache__/
+.git/
+.env
+*.tar.gz
+```
+
+<v-clicks>
+
+- Everything in the build folder is sent to Docker as the **build context**.
+- `.dockerignore` keeps out junk (faster builds, smaller images) and
+  **secrets** — a `.env` copied by `COPY . .` would end up inside the image.
+
+</v-clicks>
+
+---
+---
+
+# `CMD` vs `ENTRYPOINT`
+
+<v-clicks>
+
+- **`CMD`** — the default command. Replaced by anything you type after the
+  image name: `docker run lab09-app:1.0 python -V` runs `python -V` instead.
+- **`ENTRYPOINT`** — the fixed program; `CMD` / your arguments become its
+  **arguments**. Used by tool images: `amazon/aws-cli` has entrypoint `aws`,
+  so `docker run amazon/aws-cli:2.39.3 s3 ls` runs `aws s3 ls`.
+- To run something else in such an image, override it: `--entrypoint sh`.
+- Use the JSON form `["python", "app.py"]`: the app gets signals
+  (`docker stop`) directly, without a shell in between.
+
+</v-clicks>
+
+---
+---
+
+# Tag and push (concept)
+
+```bash {1|2|3|4}
+docker tag lab09-app:1.0 myuser/lab09-app:1.0   # name it for Docker Hub
+docker login                                     # once per machine
+docker push myuser/lab09-app:1.0                 # upload the layers
+docker pull myuser/lab09-app:1.0                 # on any other machine
+```
+
+<v-clicks>
+
+- The server never builds anything: it **pulls** the exact image you tested.
+- Next week: the same with **AWS ECR**, and running the image on EC2.
+
+</v-clicks>
+
+---
+layout: center
+class: text-center
+---
+
+# Quick check
+
+<div class="text-xl mt-4 max-w-2xl mx-auto text-left">
+You changed one line in <code>app.py</code> and rebuilt. With the "fast"
+Dockerfile, which steps run again?
+</div>
+
+<div v-click class="mt-8 text-lg opacity-70">
+Only <code>COPY app.py .</code> and the steps after it. <code>FROM</code>,
+<code>COPY requirements.txt</code> and <code>pip install</code> come from the
+cache, because their inputs didn't change.
+</div>
+
+---
+layout: section
+transition: slide-left
+---
+
+# Data, networks, Compose
+## Containers that keep data and talk to each other
+
+---
+---
+
+# Containers are disposable — data isn't
+
+<v-clicks>
+
+- A container's writable layer is deleted with the container.
+  Redeploy = new container = **empty** again (today's scenario).
+- A **volume** is storage managed by Docker, mounted into the container
+  at a path. It outlives any container.
+
+</v-clicks>
+
+```bash {1|2|3-4}
+docker volume create lab09-data
+docker run -d --name app -p 8000:8000 -v lab09-data:/data lab09-app:1.0
+docker rm -f app        # container gone…
+docker run -d --name app -p 8000:8000 -v lab09-data:/data lab09-app:1.0   # …files still there
+```
+
+---
+---
+
+# Named volume vs bind mount
+
+| | Named volume | Bind mount |
+|---|---|---|
+| Syntax | `-v lab09-data:/data` | `-v "$PWD/site":/usr/share/nginx/html` |
+| Lives in | Docker's storage area | A folder **you** choose on the host |
+| Created by | Docker (automatically if missing) | You |
+| Good for | Databases, app data | Code and config during development |
+
+<div v-click class="mt-6 text-sm opacity-70">
+A typo in a volume name doesn't fail — Docker silently creates a new,
+empty volume. Check with <code>docker volume ls</code>.
+</div>
+
+---
+---
+
+# Networks: containers find each other by name
+
+<v-clicks>
+
+- Containers on the same **user-defined network** reach each other by
+  **container (or service) name** — Docker runs a DNS for them.
+- No published ports needed between them: `-p` is only for traffic from
+  **outside**.
+- Never hardcode container IPs: they change on every restart.
+
+</v-clicks>
+
+```bash
+docker network create labnet
+docker run -d --name s3 --network labnet motoserver/moto:5.2.5
+docker run --rm --network labnet python:3.12-slim getent hosts s3   # <its IP>  s3
+```
+
+---
+---
+
+# Docker Compose: the whole stack in one file
+
+<v-clicks>
+
+- Real apps are several containers: the app, a database, a cache, a
+  local S3…
+- **Compose** describes them in `compose.yaml`: images or builds, ports,
+  volumes, env — and puts them on **one network** automatically.
+- One command starts everything; the file lives in Git next to the code.
+
+</v-clicks>
+
+---
+---
+
+# `compose.yaml`: app + local S3
+
+```yaml {1-7|9-12|14-15}
+services:
+  app:
+    build: .
+    image: lab09-app:1.0
+    ports: ["8000:8000"]
+    volumes:
+      - appdata:/data
+
+  s3:
+    image: motoserver/moto:5.2.5
+    ports:
+      - "5050:5000"   # host 5050 (5000 is AirPlay on macOS)
+
+volumes:
+  appdata:
+```
+
+<div v-click class="mt-2 text-sm opacity-70">
+Inside the stack, the app reaches the S3 service at <code>http://s3:5000</code>
+— service name + container port.
+</div>
+
+---
+---
+
+# Compose commands
+
+```bash {1|2|3|4|5|6-7}
+docker compose up -d --build        # build if needed, start everything
+docker compose ps                   # status of the services
+docker compose logs -f app          # logs of one service
+docker compose exec app sh          # shell in a running service
+docker compose run --rm backup      # start a one-off job, delete it after
+docker compose down                 # stop + remove containers and network
+docker compose down -v              # …and the volumes (= your data!)
+```
+
+---
+---
+
+# Storage meets containers
+
+```yaml {1-4|5-6|7-12}
+  backup:
+    image: amazon/aws-cli:2.39.3
+    profiles: ["tools"]          # not started by "up", only by "run"
+    env_file: .env               # keys + AWS_ENDPOINT_URL — not in the image
+    volumes:
+      - appdata:/data:ro         # the app's data, read-only
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        aws s3 mb "s3://$$BUCKET" 2>/dev/null || true
+        aws s3 cp /data "s3://$$BUCKET/backups/$$(date +%F)/" --recursive
+```
+
+<div v-click class="mt-2 text-sm opacity-70">
+With <code>AWS_ENDPOINT_URL=http://s3:5000</code> in <code>.env</code> it backs up
+to the local moto container; remove that line and put Learner Lab keys there —
+the same container backs up to real S3.
+</div>
+
+---
+---
+
+# Secrets: never baked into an image
+
+<v-clicks>
+
+- Anything you `COPY` or `ENV` into an image is readable by everyone who
+  can pull it: `docker history`, or just `docker run … env`.
+- Pass secrets **at run time**: `-e`, `--env-file .env`, Compose
+  `env_file:` — and keep `.env` in `.gitignore` **and** `.dockerignore`.
+- In AWS, containers get credentials from an **IAM role** (instance or task
+  role) — no keys at all. Same idea as last week's credentials chain.
+
+</v-clicks>
+
+<div v-click class="mt-4 p-4 rounded bg-red-500/10 text-sm">
+A pushed image with an access key inside is a public leak — deleting the tag
+doesn't help, the image may already be pulled. Rotate the key.
+</div>
+
+---
+---
+
+# Cleaning up
+
+```bash {1|2|3|4}
+docker ps -a                  # stopped containers pile up
+docker system df              # how much space images, containers, volumes use
+docker image prune            # remove dangling (untagged) images
+docker system prune           # stopped containers, unused networks, dangling images
+```
+
 <div v-click class="mt-6 p-4 rounded bg-red-500/10 text-sm">
-In Learner Lab your budget is limited. Delete what you created and click
-<b>End Lab</b> after every session.
+<code>docker system prune -a --volumes</code> also deletes <b>all</b> unused images
+and <b>volumes</b> — your databases' data included. Read the prompt before
+typing <code>y</code>.
+</div>
+
+---
+---
+
+# When it doesn't work
+
+| Symptom | Likely cause |
+|---|---|
+| `port is already allocated` | An old container still uses the port: `docker ps -a` |
+| `curl` gets no reply | App binds `127.0.0.1` inside the container, or it exited: `docker logs` |
+| Data gone after redeploy | No volume, or a typo created a new empty one |
+| `pip install` on every build | Code copied before requirements |
+| Container can't reach `localhost:5050` | Inside a container, use the service name: `http://s3:5000` |
+
+---
+layout: center
+class: text-center
+---
+
+# Quick check
+
+<div class="text-xl mt-4 max-w-2xl mx-auto text-left">
+You run <code>docker compose down -v</code> at the end of the day. Tomorrow the
+app starts with no notes. Bug?
+</div>
+
+<div v-click class="mt-8 text-lg opacity-70">
+No — <code>-v</code> deleted the <code>appdata</code> volume. Plain
+<code>docker compose down</code> keeps volumes. (And that's why the backup to
+S3 exists.)
 </div>
 
 ---
@@ -908,33 +954,32 @@ In Learner Lab your budget is limited. Delete what you created and click
 <div class="grid grid-cols-2 gap-6 text-sm">
 <div>
 
-**AWS Academy Learner Lab** (`us-east-1`)
+**Part A — Docker basics** (everyone)
 
-1. Bucket `lab09-<student-id>`, versioning on
-2. Upload, overwrite, restore the old version
-3. Delete, then undelete (delete marker)
-4. Lifecycle rule + Block Public Access
-5. Presigned URL with `curl`
-6. DynamoDB table `students`: put, get, scan
-7. `backup.sh` + `students.py` (Part C)
-8. Delete everything, then **End Lab**
+1. `nginx` with `-p`, `logs`, `exec`
+2. Write the Dockerfile for the Flask app, build, run
+3. Edit `app.py`, rebuild: see `CACHED`
+4. Named volume: data survives `docker rm`
+
+**Part B — Compose + S3**
+
+5. `compose.yaml` with `app` + `s3`
+6. One-off `backup` container → S3
 
 </div>
 <div>
 
-**Without AWS**
-
-The same commands against **moto**, a local AWS emulator:
+**Track B** — local S3 (moto container):
 
 ```bash
-pip install "moto[server]" awscli
-moto_server -p 5003 &
-export AWS_ACCESS_KEY_ID=test \
-  AWS_SECRET_ACCESS_KEY=test \
-  AWS_DEFAULT_REGION=us-east-1
-aws --endpoint-url http://localhost:5003 \
-  s3api create-bucket --bucket lab09-test
+AWS_ENDPOINT_URL=http://s3:5000
+docker compose run --rm backup
 ```
+
+**Track A** — real S3 in **Learner Lab**
+(`us-east-1`): same compose file, Learner Lab keys
+in `.env`, no endpoint line. Delete the bucket and
+**End Lab** after.
 
 </div>
 </div>
@@ -946,13 +991,13 @@ aws --endpoint-url http://localhost:5003 \
 
 <v-clicks>
 
-- [ ] Explain block, file and object storage, and name the AWS service for each
-- [ ] Pick an EBS volume type and use snapshots to back up or move a disk
-- [ ] Create an S3 bucket with versioning, a lifecycle rule and Block Public Access
-- [ ] Restore an overwritten or deleted object, and share one with a presigned URL
-- [ ] Use `aws s3` and `aws s3api` from the command line
-- [ ] Compare a database on EC2, RDS and DynamoDB, and choose between them
-- [ ] Write a Bash backup script and a boto3 script that use S3 and DynamoDB
+- [ ] Choose between EBS, S3, EFS, RDS and DynamoDB for a given kind of data
+- [ ] Script S3 with the CLI and boto3 without putting keys in the code
+- [ ] Explain images vs containers, and containers vs VMs
+- [ ] Run, inspect, debug and remove containers with the `docker` CLI
+- [ ] Write a Dockerfile that uses the layer cache well
+- [ ] Keep data in volumes and connect services with Compose
+- [ ] Back up a container's data to S3 with credentials passed at run time
 
 </v-clicks>
 
@@ -962,15 +1007,14 @@ layout: default
 
 # Before next lecture
 
-- [ ] Empty and delete your practice bucket (all versions), delete the
-      table, and **End Lab**
-- [ ] Check that no EBS volumes or snapshots of yours are left
-- [ ] Install **Docker Desktop** (or Docker Engine on Linux) and run
-      `docker run hello-world`
+- [ ] Finish the practice and clean up: `docker compose down -v`, remove
+      the lab images and volume
+- [ ] Track A: delete your bucket and **End Lab**
+- [ ] Create a free **Docker Hub** account if you don't have one
 
 <div class="mt-8 text-sm opacity-60">
-Next week we package applications into containers — and later push their
-images and artifacts to the storage you used today.
+Next week we take today's image to AWS: push it to a registry and run it on
+EC2.
 </div>
 
 ---
@@ -979,5 +1023,4 @@ layout: end
 
 # Next lecture
 
-Docker Fundamentals — images, containers and why "it works on my machine"
-stops being a problem.
+Docker + AWS — pushing images to a registry and running containers on EC2.
