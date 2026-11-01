@@ -47,6 +47,7 @@ layout: default
 - [ ] Keeping S3 private: Block Public Access and presigned URLs
 - [ ] S3 from the CLI — the commands you'll use in CI/CD
 - [ ] Databases: on EC2 vs managed RDS, and DynamoDB
+- [ ] Automate it: backup scripts, boto3 and CI — storage as code
 - [ ] Choosing the right service, and not paying for forgotten ones
 
 </v-clicks>
@@ -547,6 +548,321 @@ transition: slide-left
 ---
 
 # Block 5
+## Automate it — storage as code
+
+---
+---
+
+# Why script it?
+
+<v-clicks>
+
+- Clicking in the console works once. A **script** works every night, on
+  every server, and the next person can read what it does.
+- Scripts live in **Git**: reviewed in a pull request, versioned, rolled back.
+- The same commands run on your laptop, in **cron** and in **CI/CD**.
+- Today's tools: **Bash + AWS CLI** for glue, **Python + boto3** when you
+  need logic, **GitHub Actions** to run it on every push.
+
+</v-clicks>
+
+---
+---
+
+# `backup.sh` (1/2): fail fast, name things
+
+```bash {1-4|6-7|8-11}
+#!/usr/bin/env bash
+# Back up a folder to S3 under backups/<today>/
+# usage: ./backup.sh <folder> <bucket>
+set -euo pipefail
+
+SRC=${1:?usage: backup.sh <folder> <bucket>}
+BUCKET=${2:?usage: backup.sh <folder> <bucket>}
+STAMP=$(date +%F-%H%M%S)                  # 2026-11-03-101500
+NAME="$(basename "$SRC")-$STAMP.tar.gz"
+ARCHIVE="/tmp/$NAME"
+KEY="backups/$(date +%F)/$NAME"           # one "folder" per day
+```
+
+<div v-click class="mt-4 text-sm opacity-70">
+<code>-e</code> stops on the first failed command, <code>-u</code> on an unset
+variable, <code>-o pipefail</code> when any part of a pipe fails.
+<code>${1:?msg}</code> exits with a usage message if the argument is missing.
+</div>
+
+---
+---
+
+# `backup.sh` (2/2): pack, upload, show
+
+```bash {1|2|3-4|5}
+tar -czf "$ARCHIVE" -C "$(dirname "$SRC")" "$(basename "$SRC")"
+aws s3 cp "$ARCHIVE" "s3://$BUCKET/$KEY"
+rm -f "$ARCHIVE"
+echo "Backed up $SRC to s3://$BUCKET/$KEY"
+aws s3 ls "s3://$BUCKET/backups/" --recursive
+```
+
+```text
+$ ./backup.sh myapp lab09-<id>
+upload: /tmp/myapp-2026-11-03-101500.tar.gz to s3://lab09-<id>/backups/2026-11-03/...
+Backed up myapp to s3://lab09-<id>/backups/2026-11-03/myapp-2026-11-03-101500.tar.gz
+2026-11-03 10:15:00        569 backups/2026-11-03/myapp-2026-11-03-101500.tar.gz
+```
+
+<div v-click class="mt-4 text-sm opacity-70">
+Thanks to <code>set -e</code>, if the upload fails the script stops there —
+it never prints "Backed up" for a backup that doesn't exist.
+</div>
+
+---
+---
+
+# Restore the newest backup
+
+```bash {1-2|3-6|8-10}
+LATEST=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix backups/ \
+  --query 'sort_by(Contents || `[]`, &LastModified)[-1].Key' --output text)
+if [ "$LATEST" = "None" ]; then
+  echo "No backups found in s3://$BUCKET/backups/" >&2
+  exit 1
+fi
+
+aws s3 cp "s3://$BUCKET/$LATEST" /tmp/latest.tar.gz
+mkdir -p restored
+tar -xzf /tmp/latest.tar.gz -C restored
+```
+
+<div v-click class="mt-4 text-sm opacity-70">
+<code>--query</code> uses JMESPath: sort the objects by date and take the last
+one. <code>|| `[]`</code> handles an empty prefix instead of crashing.
+</div>
+
+---
+---
+
+# Lifecycle as code: backups clean themselves up
+
+```json
+{
+  "Rules": [{
+    "ID": "expire-old-backups",
+    "Filter": { "Prefix": "backups/" },
+    "Status": "Enabled",
+    "Expiration": { "Days": 30 },
+    "NoncurrentVersionExpiration": { "NoncurrentDays": 7 }
+  }]
+}
+```
+
+```bash
+aws s3api put-bucket-lifecycle-configuration --bucket "$BUCKET" \
+  --lifecycle-configuration file://backup-lifecycle.json
+```
+
+<div v-click class="mt-2 text-sm opacity-70">
+The rule is a file in Git, not a click in the console: backups older than
+30 days expire, and replaced versions are removed after 7.
+</div>
+
+---
+---
+
+# Deploy a static site with `aws s3 sync`
+
+```bash {1|2|3}
+aws s3 sync site/ "s3://$BUCKET/site/"                     # upload new/changed files only
+aws s3 sync site/ "s3://$BUCKET/site/" --delete --dryrun   # preview first!
+aws s3 sync site/ "s3://$BUCKET/site/" --delete            # make S3 match the folder
+```
+
+<v-clicks>
+
+- `sync` compares both sides and copies only what changed — fast for CI.
+- `--delete` removes files in S3 that are **not** in your folder.
+
+</v-clicks>
+
+<div v-click class="mt-4 p-4 rounded bg-red-500/10 text-sm">
+Swap the arguments by mistake (<code>sync s3://… site/ --delete</code>) and
+it deletes your local files instead. Always run <code>--dryrun</code> first.
+</div>
+
+---
+---
+
+# Python + boto3: S3
+
+```python {1-2|4|5|6-8}
+import boto3
+s3 = boto3.client("s3")
+
+s3.upload_file("notes.txt", "lab09-test", "docs/notes.txt")
+s3.download_file("lab09-test", "docs/notes.txt", "copy.txt")
+url = s3.generate_presigned_url("get_object",
+        Params={"Bucket": "lab09-test", "Key": "docs/notes.txt"},
+        ExpiresIn=300)                 # seconds
+```
+
+<div v-click class="mt-4 text-sm opacity-70">
+The same three things you did with the CLI — upload, download, presigned URL —
+but now inside a program that can loop, check results and decide.
+</div>
+
+---
+---
+
+# Python + boto3: a tiny "students" CRUD
+
+```python {1-3|5|6|7}
+import boto3
+from boto3.dynamodb.conditions import Key
+table = boto3.resource("dynamodb").Table("students")
+
+table.put_item(Item={"id": "s010", "name": "Aruzhan", "group": "ENG-1"})
+print(table.get_item(Key={"id": "s010"})["Item"])
+print(table.query(KeyConditionExpression=Key("id").eq("s010"))["Items"])
+```
+
+<div v-click class="mt-4 text-sm opacity-70">
+The <b>resource</b> API takes plain Python values — no
+<code>{"S": "..."}</code> type wrappers like the CLI. <code>query</code> reads
+by key; <code>scan</code> reads the whole table.
+</div>
+
+---
+---
+
+# Credentials: never in the code
+
+<v-clicks>
+
+- boto3 and the AWS CLI look for credentials in a fixed order:
+  **environment variables** → **`~/.aws/credentials`** (profile) →
+  **instance profile / role** on EC2.
+- So the same script runs on your laptop (profile), in Learner Lab
+  (temporary keys) and on EC2 (role) — with **zero keys in the file**.
+- Region: `AWS_DEFAULT_REGION=us-east-1` (or the profile's region).
+- Local testing: `AWS_ENDPOINT_URL=http://localhost:5003` sends every call to
+  **moto** instead of AWS — recent boto3 and AWS CLI read it automatically.
+
+</v-clicks>
+
+<div v-click class="mt-4 p-4 rounded bg-red-500/10 text-sm">
+<code>aws_access_key_id="AKIA…"</code> in a script that reaches GitHub is a
+leaked key within minutes. Bots scan public repos for them.
+</div>
+
+---
+---
+
+# Database backups: a one-liner and a cron job
+
+```bash
+pg_dump -h "$DB_HOST" -U app shop | gzip \
+  | aws s3 cp - "s3://$BUCKET/db/shop-$(date +%F).sql.gz"
+```
+
+```text
+# crontab -e   →   every night at 02:30
+30 2 * * * /home/ec2-user/backup.sh /var/www/uploads lab09-<id> >> /var/log/backup.log 2>&1
+```
+
+<v-clicks>
+
+- `aws s3 cp -` reads from **stdin**: the dump streams straight to S3, no big
+  file on disk.
+- The DB password goes in `~/.pgpass` (mode 600), not in the script.
+- `>> backup.log 2>&1` keeps a record when nobody is watching.
+
+</v-clicks>
+
+---
+---
+
+# A backup you never restored is not a backup
+
+<v-clicks>
+
+- Backups fail **silently**: wrong folder, expired credentials, a full disk,
+  an empty dump.
+- Schedule a **restore test**: download the newest backup, unpack or load it
+  into a scratch database, check that the data is there.
+- Watch the **size and date** of the newest object — a 0-byte backup or one
+  from last month is an alarm.
+- RDS automated backups and snapshots are restored the same way: **into a new
+  instance**, which you then check.
+
+</v-clicks>
+
+---
+---
+
+# CI/CD: deploy `site/` on every push (concept)
+
+```yaml {1-4|5-7|8-14|15-16}
+name: deploy-site
+on:
+  push:
+    branches: [main]
+permissions:
+  id-token: write        # allow GitHub to issue an OIDC token
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with: { role-to-assume: "arn:aws:iam::<account>:role/site-deploy", aws-region: us-east-1 }
+      - run: aws s3 sync site/ "s3://${{ vars.SITE_BUCKET }}/" --delete
+```
+
+---
+---
+
+# Why OIDC instead of access keys?
+
+<v-clicks>
+
+- With **OIDC**, GitHub proves "this is repo X, branch main" to AWS, and AWS
+  hands the job **temporary credentials** for one role.
+- No long-lived `AKIA…` key stored in GitHub secrets — nothing to leak or
+  rotate.
+- The IAM role's trust policy decides **which repo and branch** may assume it.
+
+</v-clicks>
+
+<div v-click class="mt-6 p-4 rounded bg-blue-500/10 text-sm">
+Learner Lab can't create IAM roles or OIDC providers, so this one is a demo
+for a real account. We'll build pipelines in the CI/CD weeks.
+</div>
+
+---
+layout: center
+class: text-center
+---
+
+# Quick check
+
+<div class="text-xl mt-4 max-w-2xl mx-auto text-left">
+Your nightly <code>backup.sh</code> uploads to the wrong bucket name. Without
+<code>set -euo pipefail</code>, what would the log say the next morning?
+</div>
+
+<div v-click class="mt-8 text-lg opacity-70">
+Probably "Backed up …" — the failed <code>aws s3 cp</code> is ignored and the
+script carries on. With <code>set -e</code> it stops at the failure and the
+log shows the error.
+</div>
+
+---
+layout: section
+transition: slide-left
+---
+
+# Block 6
 ## Choosing, and cleaning up
 
 ---
@@ -600,7 +916,8 @@ In Learner Lab your budget is limited. Delete what you created and click
 4. Lifecycle rule + Block Public Access
 5. Presigned URL with `curl`
 6. DynamoDB table `students`: put, get, scan
-7. Delete everything, then **End Lab**
+7. `backup.sh` + `students.py` (Part C)
+8. Delete everything, then **End Lab**
 
 </div>
 <div>
@@ -635,6 +952,7 @@ aws --endpoint-url http://localhost:5003 \
 - [ ] Restore an overwritten or deleted object, and share one with a presigned URL
 - [ ] Use `aws s3` and `aws s3api` from the command line
 - [ ] Compare a database on EC2, RDS and DynamoDB, and choose between them
+- [ ] Write a Bash backup script and a boto3 script that use S3 and DynamoDB
 
 </v-clicks>
 
