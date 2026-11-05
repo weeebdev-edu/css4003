@@ -140,6 +140,12 @@ index_file="$OUT_DIR/index.html"
 <ul>
 HTML_HEAD
 
+  if [ -f "pdfs/final-project.pdf" ]; then
+    printf '  <li><span class="title">%s</span><span class="links">%s</span></li>\n' \
+      "Final project (40%)" \
+      "<a href=\"pdfs/final-project.pdf\">Assignment</a> <a href=\"pdfs/final-project-rubric.pdf\">Rubric</a> <a href=\"pdfs/final-project-report-template.pdf\">Report template</a> <a href=\"pdfs/free-tier-guide.pdf\">Free tier guide</a> <a href=\"https://github.com/weeebdev-edu/final-project-template\">Template repo</a>"
+  fi
+
   for slug in "${sorted_slugs[@]}"; do
     src="lectures/$slug/slides.md"
     title="$(html_escape "$(deck_title "$src" "$slug")")"
