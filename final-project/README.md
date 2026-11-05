@@ -19,7 +19,7 @@ to an employer.
 ## 1. What you start from
 
 Create your own **public** repository from the template:
-**`weeebdev-edu/final-project-template` → "Use this template"**. Name it
+**`weeebdev-edu/css4003-final-project` → "Use this template"**. Name it
 `<your-prefix>-campus-platform` (your prefix is in your variant).
 
 The template contains `campus-app`, a FastAPI service:
